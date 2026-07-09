@@ -2,10 +2,15 @@
 
 The original script used fixed 20bp junction barcodes specific to one TadA
 insertion assay. This version generalizes that idea to arbitrary references:
-build a k-mer set per reference, then score each read by what fraction of its
-own k-mers are contained in a given reference's k-mer set (its "containment").
-This is orientation-independent (checks both strands) and doesn't require any
-assay-specific anchor sequence.
+build a k-mer set per reference, then score each read by how much it overlaps
+that reference's k-mer set (its "containment"). This is orientation-independent
+(checks both strands) and doesn't require any assay-specific anchor sequence.
+
+Containment is normalized by the SMALLER of the read's/reference's k-mer
+counts, not always the read's. Always dividing by the read's k-mer count
+would make containment collapse toward zero whenever the read is much longer
+than the reference (e.g. a 2kb amplicon read with only a 600bp target
+region), even for a perfect match in the overlapping part.
 """
 
 _COMPLEMENT = str.maketrans("ACGTacgtNn", "TGCAtgcaNn")
@@ -53,7 +58,7 @@ def match_reads_by_kmer(fastq_records, ref_kmers, k, min_containment=0.3):
             if not rk:
                 continue
             shared = len(read_kmers & rk)
-            containment = shared / len(read_kmers)
+            containment = shared / min(len(read_kmers), len(rk))
             if containment > best_score:
                 best_score, best_ref = containment, ref_name
 

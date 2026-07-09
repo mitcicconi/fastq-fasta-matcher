@@ -85,7 +85,10 @@ footer a{color:var(--title-fg)}
   <p class="sub">Upload the FASTA sequences you expect and the FASTQ reads you sequenced.
   This runs entirely in your browser — nothing is uploaded anywhere. Two independent methods
   cross-check each other: k-mer containment, and a k-mer-seeded local aligner producing a
-  MAPQ-like confidence score.</p>
+  MAPQ-like confidence score. If your reads are much longer than the region of interest
+  (e.g. a long amplicon read where only part of it corresponds to a short reference/variant
+  region), lower the containment threshold below — a read that's mostly non-reference flanking
+  sequence will naturally have low containment even for a perfect match in the overlapping part.</p>
 
   <div class="panel">
     <h2>Inputs</h2>
@@ -122,15 +125,15 @@ footer a{color:var(--title-fg)}
         <div class="checkline"><input type="checkbox" id="chk-kmer" checked> Run k-mer containment matching</div>
         <div class="setting">
           <label class="lbl">Minimum containment to call a match</label>
-          <input type="range" id="rng-containment" min="0.05" max="1" step="0.05" value="0.3">
-          <div class="val" id="val-containment">0.30</div>
+          <input type="range" id="rng-containment" min="0.02" max="1" step="0.02" value="0.1">
+          <div class="val" id="val-containment">0.10</div>
         </div>
       </div>
       <div class="col">
         <div class="setting">
           <label class="lbl">K-mer length (both methods)</label>
-          <input type="range" id="rng-k" min="11" max="41" step="2" value="21">
-          <div class="val" id="val-k">21</div>
+          <input type="range" id="rng-k" min="11" max="41" step="2" value="17">
+          <div class="val" id="val-k">17</div>
         </div>
       </div>
     </div>
@@ -240,7 +243,15 @@ function buildReferenceIndex(fastaRecords, k){
   return { refKmerSets, invIndex, refPos };
 }
 
-/* ── K-mer containment matching (exact port of matcher/kmer.py) ─────── */
+/* ── K-mer containment matching ──────────────────────────────────────
+   containment = shared k-mers / min(|read k-mers|, |reference k-mers|).
+   Deliberately normalized by the SMALLER set, not always the read's —
+   dividing by the read's total k-mer count would make containment
+   collapse toward zero whenever the read is much longer than the
+   reference (e.g. a 2kb amplicon read with a 600bp target region),
+   even for a perfect match in the overlapping part. Normalizing by the
+   smaller side keeps the score meaningful regardless of which one
+   (read or reference) is longer. ───────────────────────────────────── */
 function kmerContainmentMatch(readSeq, refKmerSets, k, minContainment){
   const readKmers = new Set([...kmerSet(readSeq, k), ...kmerSet(revcomp(readSeq), k)]);
   if (readKmers.size === 0) return { reference: null, containment: 0, matched: false };
@@ -250,7 +261,7 @@ function kmerContainmentMatch(readSeq, refKmerSets, k, minContainment){
     let shared = 0;
     const [small, big] = readKmers.size < refSet.size ? [readKmers, refSet] : [refSet, readKmers];
     for (const km of small) if (big.has(km)) shared++;
-    const containment = shared / readKmers.size;
+    const containment = shared / Math.min(readKmers.size, refSet.size);
     if (containment > bestScore){ bestScore = containment; bestRef = refName; }
   }
   const matched = bestScore >= minContainment;
@@ -259,57 +270,101 @@ function kmerContainmentMatch(readSeq, refKmerSets, k, minContainment){
 
 /* ── Banded local aligner (seed-and-extend) ──────────────────────────
    Not minimap2 — a from-scratch vanilla-JS approximation so the whole
-   app can run with zero server and zero external dependencies. Uses a
-   k-mer seed to anchor a band, then a banded Needleman-Wunsch-style DP
-   with free end-gaps on the reference side. Produces a 0..60 confidence
-   score analogous to MAPQ: high when the best hit clearly beats the
-   runner-up, low when hits are ambiguous. ─────────────────────────── */
-const BAND = 25, MATCH = 2, MISMATCH = -1, GAP = -2, NEG = -1e9;
+   app can run with zero server and zero external dependencies.
 
-function bandedAlign(read, ref, anchorOffset, band){
+   This is a *local* (Smith-Waterman-style) alignment: it finds the
+   best-scoring matching subregion instead of forcing the whole read to
+   align end-to-end. That matters when a read is much longer than the
+   reference (e.g. a 2kb amplicon read where only a few hundred bp
+   actually correspond to a short reference/variant region) — forcing
+   full-length consumption would tank the score over all the
+   non-overlapping flanking sequence even for a perfect match in the
+   overlapping region.
+
+   A k-mer seed anchors the expected diagonal; the read is windowed
+   around that anchor to roughly the reference's length (+ band padding)
+   so cost stays bounded by the reference length, not the full read
+   length, regardless of how long the read is. Produces a 0..60
+   confidence score analogous to MAPQ: high when the best local hit is
+   long + clean and clearly beats the runner-up, low when ambiguous. ─── */
+const BAND = 40, MATCH = 2, MISMATCH = -1, GAP = -2;
+
+// Smith-Waterman-style local alignment, banded around a diagonal anchor.
+// Returns { identity, alignedLen } for the best-scoring local subregion.
+function bandedLocalAlign(read, ref, anchorOffset, band){
   const n = read.length;
   const width = 2 * band + 1;
-  let prev = new Float64Array(width).fill(NEG);
-  let curr = new Float64Array(width).fill(NEG);
+  let prevScore = new Float64Array(width);
+  let currScore = new Float64Array(width);
+  let prevStart = new Int32Array(width);
+  let currStart = new Int32Array(width);
 
-  // row 0 (0 read chars consumed): free start anywhere within the band on ref
-  for (let d = 0; d < width; d++) prev[d] = 0;
-
-  let best = NEG;
+  let bestScore = 0, bestLen = 0;
   for (let i = 1; i <= n; i++){
-    curr.fill(NEG);
+    currScore.fill(0);
     const rc = read[i - 1];
     for (let d = 0; d < width; d++){
       const j = i + anchorOffset + d - band;
       if (j < 0 || j > ref.length) continue;
-      let v = NEG;
-      if (j >= 1 && prev[d] > NEG){
+      let v = 0, start = i - 1; // default: fresh start at this row (local alignment restart)
+
+      if (j >= 1){
         const gc = ref[j - 1];
-        v = Math.max(v, prev[d] + (rc === gc ? MATCH : MISMATCH));
+        const cand = prevScore[d] + (rc === gc ? MATCH : MISMATCH);
+        if (cand > v){ v = cand; start = prevScore[d] > 0 ? prevStart[d] : i - 1; }
       }
-      if (d + 1 < width && prev[d + 1] > NEG) v = Math.max(v, prev[d + 1] + GAP);
-      if (d - 1 >= 0 && j >= 1 && curr[d - 1] > NEG) v = Math.max(v, curr[d - 1] + GAP);
-      curr[d] = v;
-      if (i === n && v > best) best = v;
+      if (d + 1 < width){
+        const cand = prevScore[d + 1] + GAP;
+        if (cand > v){ v = cand; start = prevScore[d + 1] > 0 ? prevStart[d + 1] : i - 1; }
+      }
+      if (d - 1 >= 0 && j >= 1){
+        const cand = currScore[d - 1] + GAP;
+        if (cand > v){ v = cand; start = currScore[d - 1] > 0 ? currStart[d - 1] : i - 1; }
+      }
+      currScore[d] = v;
+      currStart[d] = start;
+      if (v > bestScore){ bestScore = v; bestLen = i - start; }
     }
-    const tmp = prev; prev = curr; curr = tmp;
+    let t = prevScore; prevScore = currScore; currScore = t;
+    t = prevStart; prevStart = currStart; currStart = t;
   }
-  const maxPossible = n * MATCH;
-  const identity = maxPossible > 0 ? Math.max(0, best) / maxPossible : 0;
-  return Math.min(1, identity);
+  const identity = bestLen > 0 ? Math.min(1, bestScore / (MATCH * bestLen)) : 0;
+  return { identity, alignedLen: bestLen };
 }
 
-function alignReadToCandidate(readSeq, refSeq, refPosMap, k){
-  // find a seed: first shared k-mer between read and this reference
+// Robust seed: vote on the (refPos - readPos) offset across ALL shared
+// k-mers between this read/strand and this candidate reference, and take
+// the most common offset. Far more reliable than "first shared k-mer",
+// which can land on a spurious short match far from the real homologous
+// region in a long, noisy read.
+function bestSeedOffset(readSeq, refPosMap, k){
+  const votes = new Map();
   for (let i = 0; i <= readSeq.length - k; i++){
-    const km = readSeq.substring(i, i + k);
-    const gPos = refPosMap.get(km);
+    const gPos = refPosMap.get(readSeq.substring(i, i + k));
     if (gPos !== undefined){
-      const anchorOffset = gPos - i; // ref index aligned with read index 0
-      return bandedAlign(readSeq, refSeq, anchorOffset, BAND);
+      const offset = gPos - i;
+      votes.set(offset, (votes.get(offset) || 0) + 1);
     }
   }
-  return null; // no seed found — can't anchor a band
+  let bestOffset = null, bestVotes = 0;
+  for (const [off, v] of votes) if (v > bestVotes){ bestVotes = v; bestOffset = off; }
+  return bestOffset;
+}
+
+function alignReadToCandidate(readSeq, refSeq, refPosMap, k, band){
+  const anchorOffset = bestSeedOffset(readSeq, refPosMap, k);
+  if (anchorOffset === null) return null; // no seed found — can't anchor a band
+
+  // Window the read to roughly where it's expected to overlap the
+  // reference, so alignment cost is bounded by reference length (short)
+  // rather than full read length (which may be much longer).
+  const readStart = Math.max(0, -anchorOffset - band);
+  const readEnd = Math.min(readSeq.length, refSeq.length - anchorOffset + band);
+  if (readEnd <= readStart) return null;
+  const window = readSeq.slice(readStart, readEnd);
+  const windowAnchorOffset = anchorOffset + readStart;
+
+  return bandedLocalAlign(window, refSeq, windowAnchorOffset, band);
 }
 
 function mapqLikeMatch(readSeq, refSeqs, refIndex, k){
@@ -329,18 +384,23 @@ function mapqLikeMatch(readSeq, refSeqs, refIndex, k){
   for (const [refName] of top){
     const refSeq = refSeqs.get(refName);
     const posMap = refIndex.refPos.get(refName);
-    let bestIdentity = 0;
+    let best = { identity: 0, alignedLen: 0 };
     for (const s of strands){
-      const identity = alignReadToCandidate(s, refSeq, posMap, k);
-      if (identity !== null && identity > bestIdentity) bestIdentity = identity;
+      const res = alignReadToCandidate(s, refSeq, posMap, k, BAND);
+      if (res !== null && res.identity > best.identity) best = res;
     }
-    scored.push([refName, bestIdentity]);
+    scored.push([refName, best]);
   }
-  scored.sort((a, b) => b[1] - a[1]);
-  const [bestRef, bestScore] = scored[0];
-  const secondScore = scored.length > 1 ? scored[1][1] : 0;
-  const gapFactor = Math.min(1, (bestScore - secondScore) / 0.1);
-  const mapq = Math.round(Math.min(60, 60 * bestScore) * Math.max(0, gapFactor));
+  scored.sort((a, b) => b[1].identity - a[1].identity);
+  const [bestRef, bestHit] = scored[0];
+  const secondIdentity = scored.length > 1 ? scored[1][1].identity : 0;
+
+  // Confidence needs both a clean identity AND enough aligned length to
+  // be meaningful (a few bp of accidental perfect match shouldn't score
+  // high) — length term saturates by ~4x the seed k-mer length.
+  const lengthFactor = Math.min(1, bestHit.alignedLen / (4 * k));
+  const gapFactor = Math.min(1, (bestHit.identity - secondIdentity) / 0.1);
+  const mapq = Math.round(Math.min(60, 60 * bestHit.identity) * lengthFactor * Math.max(0, gapFactor));
   return { reference: bestRef, mapq, matched: false }; // 'matched' decided by caller against threshold
 }
 

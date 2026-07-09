@@ -51,15 +51,17 @@ with st.sidebar:
 
     st.header("K-mer method")
     run_kmer = st.checkbox("Run k-mer containment matching", value=True)
-    kmer_k = st.slider("K-mer length", min_value=11, max_value=41, value=21, step=2)
+    kmer_k = st.slider("K-mer length", min_value=11, max_value=41, value=17, step=2)
     min_containment = st.slider(
         "Minimum containment to call a match",
-        min_value=0.05,
+        min_value=0.02,
         max_value=1.0,
-        value=0.3,
-        step=0.05,
-        help="Fraction of a read's k-mers that must be found in a reference's "
-        "k-mer set for that read to be called a match.",
+        value=0.1,
+        step=0.02,
+        help="Shared k-mers as a fraction of whichever is smaller — the read's "
+        "k-mer count or the reference's. Normalizing by the smaller side keeps "
+        "this meaningful even when a read is much longer than the reference "
+        "(e.g. a long amplicon read with only a short target region).",
     )
 
     go = st.button("Run matching", type="primary", use_container_width=True)
