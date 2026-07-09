@@ -1,11 +1,16 @@
 # FASTQ ↔ FASTA Matcher
 
 A small tool that answers one question: **given the sequences you expected
-(FASTA) and what you actually sequenced (FASTQ), which references show up
-in your reads, and which don't?**
+and what you actually sequenced (FASTQ), which references show up in your
+reads, and which don't?**
 
-Upload a reference FASTA (one or many expected sequences/variants) and one
-or more FASTQ files, and get a per-reference and per-read match report.
+Upload your reference sequences (FASTA, GenBank, or SnapGene — one or many
+expected sequences/variants, mixed formats are fine) and one or more FASTQ
+files, and get a per-reference and per-read match report.
+
+**Supported reference formats:** FASTA (`.fasta`/`.fa`/`.fna`), GenBank flat
+files (`.gb`/`.gbk`/`.genbank`), and SnapGene (`.dna`). GenBank/SnapGene
+records that don't carry a usable name fall back to the file's own name.
 
 There are two versions of this tool in the repo:
 
@@ -73,7 +78,8 @@ Then open the URL Streamlit prints (usually http://localhost:8501).
 ### Deploying the Python version
 
 This app has no external binary dependencies (`mappy` ships minimap2 as a
-compiled Python extension), so it deploys as-is on
+compiled Python extension, and GenBank/SnapGene parsing is pure-Python via
+Biopython), so it deploys as-is on
 [Streamlit Community Cloud](https://streamlit.io/cloud): point it at this
 repo's `app.py` and it builds from `requirements.txt` directly.
 
@@ -85,7 +91,7 @@ app.py                   Streamlit UI (Python version)
 matcher/
   alignment.py            MAPQ alignment matching (mappy / real minimap2)
   kmer.py                 K-mer containment matching
-  io_utils.py              File upload / FASTA / FASTQ helpers
+  io_utils.py              File upload / FASTA / GenBank / SnapGene / FASTQ helpers
 sample_data/              Tiny synthetic example for demoing either version
 scripts/generate_sample_data.py   Regenerates sample_data/
 ```

@@ -94,9 +94,9 @@ footer a{color:var(--title-fg)}
     <h2>Inputs</h2>
     <div class="row">
       <div class="col">
-        <label class="lbl">Reference FASTA(s) — sequences you expect</label>
-        <div class="dropzone" id="dz-fasta">Click or drop .fasta / .fa files
-          <input type="file" id="input-fasta" accept=".fasta,.fa,.fna,.txt" multiple>
+        <label class="lbl">Reference FASTA / GenBank / SnapGene — sequences you expect</label>
+        <div class="dropzone" id="dz-fasta">Click or drop .fasta / .fa / .gb / .gbk / .dna files
+          <input type="file" id="input-fasta" accept=".fasta,.fa,.fna,.gb,.gbk,.genbank,.dna,.txt" multiple>
         </div>
         <div class="filelist" id="list-fasta"></div>
       </div>
@@ -213,6 +213,98 @@ function parseFastq(text){
 function readFilesAsText(fileList){
   const files = Array.from(fileList);
   return Promise.all(files.map(f => f.text())).then(texts => texts.join("\n"));
+}
+
+/* ── GenBank flat-file parser ─────────────────────────────────────────
+   Text format: LOCUS line gives the name, ORIGIN...// brackets the
+   sequence as numbered 10bp chunks. A file can contain multiple
+   LOCUS/ORIGIN/// records back to back. ───────────────────────────── */
+function parseGenbank(text){
+  const records = [];
+  const chunks = text.split(/\r?\n\/\/\s*\r?\n?/);
+  for (const chunk of chunks){
+    const lines = chunk.split(/\r?\n/);
+    const locusLine = lines.find(l => l.startsWith("LOCUS"));
+    if (!locusLine) continue;
+    const name = locusLine.trim().split(/\s+/)[1] || null;
+    const originIdx = lines.findIndex(l => l.startsWith("ORIGIN"));
+    if (originIdx === -1) continue;
+    const seq = lines.slice(originIdx + 1).join(" ").replace(/[0-9\s]/g, "").toUpperCase();
+    if (seq) records.push([name, seq]);
+  }
+  return records;
+}
+
+/* ── SnapGene .dna binary parser ──────────────────────────────────────
+   Reverse-engineered block format (matches Biopython's SnapGeneIO and
+   the snapgene_reader package): a header block (type 0x09, magic text
+   "SnapGene") followed by a series of [1-byte type][4-byte big-endian
+   length][payload] blocks. The sequence lives in a type-0x00 block: a
+   1-byte topology flag then raw ASCII bases. ───────────────────────── */
+function parseSnapgeneDna(buf){
+  const bytes = new Uint8Array(buf);
+  const view = new DataView(buf);
+  let offset = 0;
+  const decoder = new TextDecoder("ascii");
+
+  if (bytes.length < 5) throw new Error("File too short to be a SnapGene .dna file");
+  const firstType = bytes[offset]; offset += 1;
+  const firstLen = view.getUint32(offset, false); offset += 4;
+  if (offset + firstLen > bytes.length) throw new Error("Corrupt SnapGene header block");
+  const title = decoder.decode(bytes.slice(offset, offset + 8));
+  offset += firstLen;
+  if (firstType !== 0x09 || title !== "SnapGene") throw new Error("Not a valid SnapGene .dna file");
+
+  let seq = null;
+  while (offset + 5 <= bytes.length){
+    const blockType = bytes[offset]; offset += 1;
+    const blockLen = view.getUint32(offset, false); offset += 4;
+    if (offset + blockLen > bytes.length) break;
+    const payload = bytes.slice(offset, offset + blockLen);
+    offset += blockLen;
+    if (blockType === 0x00 && payload.length > 0){
+      seq = decoder.decode(payload.slice(1)).toUpperCase();
+    }
+  }
+  if (!seq) throw new Error("No DNA sequence block found in .dna file");
+  return seq;
+}
+
+/* ── Unified reference-file loader ────────────────────────────────────
+   Accepts FASTA, GenBank (.gb/.gbk/.genbank), and SnapGene (.dna) files,
+   mixed together if you like, and returns a flat [name, seq][] list.
+   GenBank/SnapGene records often carry no usable name, so those fall
+   back to the file's own name. ─────────────────────────────────────── */
+async function parseReferenceFiles(files){
+  const allRecords = [];
+  const usedNames = new Set();
+  function uniqueName(base){
+    let name = base || "sequence", i = 2;
+    while (usedNames.has(name)){ name = `${base}_${i}`; i++; }
+    usedNames.add(name);
+    return name;
+  }
+
+  for (const file of files){
+    const ext = (file.name.match(/\.([a-z0-9]+)$/i) || [, ""])[1].toLowerCase();
+    const stem = file.name.replace(/\.[^.]+$/, "");
+
+    if (ext === "dna"){
+      const seq = parseSnapgeneDna(await file.arrayBuffer());
+      allRecords.push([uniqueName(stem), seq]);
+    } else if (ext === "gb" || ext === "gbk" || ext === "genbank"){
+      const parsed = parseGenbank(await file.text());
+      if (parsed.length === 0) throw new Error(`No sequences found in ${file.name}`);
+      parsed.forEach(([name, seq], i) => {
+        const base = name || (parsed.length > 1 ? `${stem}_${i + 1}` : stem);
+        allRecords.push([uniqueName(base), seq]);
+      });
+    } else {
+      const parsed = parseFasta(await file.text());
+      for (const [name, seq] of parsed) allRecords.push([uniqueName(name), seq]);
+    }
+  }
+  return allRecords;
 }
 
 /* ── K-mer indexing ───────────────────────────────────────────────── */
@@ -494,7 +586,7 @@ async function run(){
   const progressFill = document.getElementById("progress-bar-fill");
   const progressText = document.getElementById("progress-text");
 
-  if (state.fastaFiles.length === 0){ alert("Upload at least one reference FASTA file."); return; }
+  if (state.fastaFiles.length === 0){ alert("Upload at least one reference file (FASTA, GenBank, or SnapGene)."); return; }
   if (state.fastqFiles.length === 0){ alert("Upload at least one FASTQ read file."); return; }
   const runAlignment = document.getElementById("chk-mapq").checked;
   const runKmer = document.getElementById("chk-kmer").checked;
@@ -511,9 +603,16 @@ async function run(){
   const mapqThreshold = parseInt(rngMapq.value, 10);
   const minContainment = parseFloat(rngContainment.value);
 
-  const fastaText = await readFilesAsText(state.fastaFiles);
+  let fastaRecords;
+  try {
+    fastaRecords = await parseReferenceFiles(state.fastaFiles);
+  } catch (err) {
+    alert(`Could not read reference file(s): ${err.message}`);
+    runBtn.disabled = false;
+    progressWrap.style.display = "none";
+    return;
+  }
   const fastqText = await readFilesAsText(state.fastqFiles);
-  const fastaRecords = parseFasta(fastaText);
   const fastqRecords = parseFastq(fastqText);
   const refNames = fastaRecords.map(r => r[0]);
   const refSeqs = new Map(fastaRecords);

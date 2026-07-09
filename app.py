@@ -13,23 +13,23 @@ import pandas as pd
 import streamlit as st
 
 from matcher.alignment import run_alignment_match
-from matcher.io_utils import cleanup, read_fastq_records, save_uploaded_files
+from matcher.io_utils import cleanup, normalize_references_to_fasta, read_fastq_records, save_uploaded_files
 from matcher.kmer import build_reference_kmer_index, match_reads_by_kmer, summarize_by_reference
 
 st.set_page_config(page_title="FASTQ ↔ FASTA Matcher", layout="wide")
 
 st.title("FASTQ ↔ FASTA Matcher")
 st.caption(
-    "Upload the FASTA sequences you expect and the FASTQ reads you sequenced. "
-    "This tool tells you which references were actually found in your reads, "
-    "and which reads didn't confidently match anything."
+    "Upload the reference sequences you expect (FASTA, GenBank, or SnapGene) and "
+    "the FASTQ reads you sequenced. This tool tells you which references were "
+    "actually found in your reads, and which reads didn't confidently match anything."
 )
 
 with st.sidebar:
     st.header("Inputs")
     fasta_files = st.file_uploader(
-        "Reference FASTA(s) — the sequences you expect",
-        type=["fasta", "fa", "fna"],
+        "Reference FASTA / GenBank / SnapGene — the sequences you expect",
+        type=["fasta", "fa", "fna", "gb", "gbk", "genbank", "dna"],
         accept_multiple_files=True,
     )
     fastq_files = st.file_uploader(
@@ -84,7 +84,7 @@ if not go:
     st.stop()
 
 if not fasta_files:
-    st.error("Upload at least one reference FASTA file.")
+    st.error("Upload at least one reference file (FASTA, GenBank, or SnapGene).")
     st.stop()
 if not fastq_files:
     st.error("Upload at least one FASTQ read file.")
@@ -93,7 +93,11 @@ if not run_alignment and not run_kmer:
     st.error("Enable at least one matching method in the sidebar.")
     st.stop()
 
-fasta_path = save_uploaded_files(fasta_files, ".fasta")
+try:
+    fasta_path = normalize_references_to_fasta(fasta_files)
+except ValueError as exc:
+    st.error(str(exc))
+    st.stop()
 fastq_path = save_uploaded_files(fastq_files, ".fastq")
 
 try:
