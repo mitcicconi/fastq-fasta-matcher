@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FASTQ ↔ FASTA Matcher</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#464f61;--fg:#f1f5f9;--hint:#c0cad8;
+  --panel-bg:#3d4655;--sep:#68778a;
+  --btn-bg:#68778a;--btn-fg:#f1f5f9;--btn-act:#78889a;
+  --run-bg:#60a5fa;--run-fg:#1e3a5f;--run-act:#3b82f6;
+  --title-fg:#93c5fd;--table-bg:#3d4655;
+  --ok:#4ade80;--warn:#fbbf24;--bad:#f87171;
+  --tx:background .2s,color .2s,border-color .2s;
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+     background:var(--bg);color:var(--fg);min-height:100vh;padding:24px 18px 60px}
+#app{max-width:1100px;margin:0 auto}
+h1{font-size:22px;color:var(--title-fg);margin-bottom:6px}
+.sub{color:var(--hint);font-size:13px;margin-bottom:22px;max-width:760px;line-height:1.5}
+.panel{background:var(--panel-bg);border-radius:10px;padding:18px 20px;margin-bottom:18px}
+.panel h2{font-size:14px;text-transform:uppercase;letter-spacing:.04em;color:var(--hint);margin-bottom:14px}
+.row{display:flex;gap:18px;flex-wrap:wrap}
+.col{flex:1;min-width:220px}
+label.lbl{display:block;font-size:11px;font-weight:700;text-transform:uppercase;
+     letter-spacing:.05em;color:var(--hint);margin-bottom:6px}
+.dropzone{background:#333c4a;border:1px dashed var(--sep);border-radius:8px;padding:14px;
+     cursor:pointer;text-align:center;font-size:13px;color:var(--hint);transition:var(--tx)}
+.dropzone:hover,.dropzone.over{border-color:var(--run-bg);color:var(--fg)}
+.dropzone input{display:none}
+.filelist{margin-top:8px;font-size:12px;color:var(--fg)}
+.filelist div{padding:2px 0}
+.setting{margin-bottom:14px}
+.setting input[type=range]{width:100%}
+.setting .val{font-size:12px;color:var(--hint)}
+select{width:100%;background:#333c4a;color:var(--fg);border:1px solid var(--sep);
+     border-radius:6px;padding:8px 10px;font-size:13px}
+.btn{background:var(--btn-bg);color:var(--btn-fg);border:none;border-radius:7px;
+     padding:9px 16px;font-size:13px;cursor:pointer;font-weight:600}
+.btn:hover{background:var(--btn-act)}
+.btn-run{background:var(--run-bg);color:var(--run-fg);font-size:15px;padding:12px 22px;width:100%}
+.btn-run:hover{background:var(--run-act)}
+.btn-run:disabled{opacity:.5;cursor:default}
+.btn-small{padding:6px 12px;font-size:12px}
+.checkline{display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:13px}
+#progress-wrap{display:none;margin-top:14px}
+#progress-bar-track{background:#333c4a;border-radius:6px;height:8px;overflow:hidden}
+#progress-bar-fill{background:var(--run-bg);height:100%;width:0%;transition:width .15s}
+#progress-text{font-size:12px;color:var(--hint);margin-top:6px}
+#results{display:none}
+.cards{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:18px}
+.card{flex:1;min-width:220px;background:var(--panel-bg);border-radius:10px;padding:16px 18px}
+.card .lbl{margin-bottom:8px}
+.card .big{font-size:26px;font-weight:700}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--sep)}
+th{color:var(--hint);font-weight:600;text-transform:uppercase;font-size:10.5px;letter-spacing:.04em}
+.status-pill{display:inline-block;padding:2px 9px;border-radius:12px;font-size:11.5px;font-weight:700}
+.status-both{background:rgba(74,222,128,.18);color:var(--ok)}
+.status-one{background:rgba(251,191,36,.18);color:var(--warn)}
+.status-none{background:rgba(248,113,113,.18);color:var(--bad)}
+.tablewrap{max-height:420px;overflow:auto;border-radius:8px}
+.note{font-size:12px;color:var(--hint);line-height:1.5;margin-top:10px}
+.tabs{display:flex;gap:6px;margin-bottom:12px}
+.tab{padding:7px 14px;font-size:12.5px;border-radius:7px;cursor:pointer;background:#333c4a;color:var(--hint)}
+.tab.active{background:var(--run-bg);color:var(--run-fg);font-weight:700}
+.tabpage{display:none}
+.tabpage.active{display:block}
+.warn-box{background:rgba(251,191,36,.12);border:1px solid rgba(251,191,36,.35);
+     color:var(--warn);border-radius:8px;padding:10px 14px;font-size:12.5px;margin-bottom:14px}
+.ok-box{background:rgba(74,222,128,.12);border:1px solid rgba(74,222,128,.35);
+     color:var(--ok);border-radius:8px;padding:10px 14px;font-size:12.5px;margin-bottom:14px}
+.filter-row{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+.filter-chip{padding:5px 12px;font-size:12px;border-radius:14px;cursor:pointer;background:#333c4a;color:var(--hint)}
+.filter-chip.active{background:var(--run-bg);color:var(--run-fg);font-weight:700}
+footer{margin-top:30px;font-size:11.5px;color:var(--hint);text-align:center;line-height:1.6}
+footer a{color:var(--title-fg)}
+</style>
+</head>
+<body>
+<div id="app">
+  <h1>FASTQ ↔ FASTA Matcher</h1>
+  <p class="sub">Upload the FASTA sequences you expect and the FASTQ reads you sequenced.
+  This runs entirely in your browser — nothing is uploaded anywhere. Two independent methods
+  cross-check each other: k-mer containment, and a k-mer-seeded local aligner producing a
+  MAPQ-like confidence score.</p>
+
+  <div class="panel">
+    <h2>Inputs</h2>
+    <div class="row">
+      <div class="col">
+        <label class="lbl">Reference FASTA(s) — sequences you expect</label>
+        <div class="dropzone" id="dz-fasta">Click or drop .fasta / .fa files
+          <input type="file" id="input-fasta" accept=".fasta,.fa,.fna,.txt" multiple>
+        </div>
+        <div class="filelist" id="list-fasta"></div>
+      </div>
+      <div class="col">
+        <label class="lbl">FASTQ read(s) — your sequencing results</label>
+        <div class="dropzone" id="dz-fastq">Click or drop .fastq / .fq files
+          <input type="file" id="input-fastq" accept=".fastq,.fq,.txt" multiple>
+        </div>
+        <div class="filelist" id="list-fastq"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Settings</h2>
+    <div class="row">
+      <div class="col">
+        <div class="checkline"><input type="checkbox" id="chk-mapq" checked> Run MAPQ-like alignment matching</div>
+        <div class="setting">
+          <label class="lbl">MAPQ-like confidence threshold</label>
+          <input type="range" id="rng-mapq" min="0" max="60" value="10">
+          <div class="val" id="val-mapq">10</div>
+        </div>
+      </div>
+      <div class="col">
+        <div class="checkline"><input type="checkbox" id="chk-kmer" checked> Run k-mer containment matching</div>
+        <div class="setting">
+          <label class="lbl">Minimum containment to call a match</label>
+          <input type="range" id="rng-containment" min="0.05" max="1" step="0.05" value="0.3">
+          <div class="val" id="val-containment">0.30</div>
+        </div>
+      </div>
+      <div class="col">
+        <div class="setting">
+          <label class="lbl">K-mer length (both methods)</label>
+          <input type="range" id="rng-k" min="11" max="41" step="2" value="21">
+          <div class="val" id="val-k">21</div>
+        </div>
+      </div>
+    </div>
+    <button class="btn-run" id="btn-run">Run matching</button>
+    <div id="progress-wrap">
+      <div id="progress-bar-track"><div id="progress-bar-fill"></div></div>
+      <div id="progress-text"></div>
+    </div>
+  </div>
+
+  <div id="results">
+    <div class="cards" id="summary-cards"></div>
+
+    <div class="panel">
+      <h2>Per-reference report</h2>
+      <div class="filter-row" id="ref-filter-row"></div>
+      <div class="tablewrap"><table id="ref-table"></table></div>
+      <div id="ref-warning"></div>
+      <button class="btn btn-small" id="btn-dl-ref" style="margin-top:12px">Download per-reference report (CSV)</button>
+    </div>
+
+    <div class="panel">
+      <h2>Per-read report</h2>
+      <div class="tabs" id="read-tabs"></div>
+      <div id="read-tabpages"></div>
+    </div>
+  </div>
+
+  <footer>
+    Runs 100% client-side — your sequences never leave your browser.
+    Source: <a href="https://github.com/mitcicconi/fastq-fasta-matcher" target="_blank">github.com/mitcicconi/fastq-fasta-matcher</a>
+  </footer>
+</div>
+
+<script>
+"use strict";
+
+/* ── Sequence helpers ─────────────────────────────────────────────── */
+const COMPLEMENT = {A:"T",T:"A",C:"G",G:"C",N:"N"};
+function revcomp(seq){
+  let out = "";
+  for (let i = seq.length - 1; i >= 0; i--) out += COMPLEMENT[seq[i]] || "N";
+  return out;
+}
+
+function parseFasta(text){
+  const records = [];
+  const lines = text.split(/\r?\n/);
+  let name = null, buf = [];
+  for (const line of lines){
+    if (line.startsWith(">")){
+      if (name !== null) records.push([name, buf.join("").toUpperCase()]);
+      name = line.slice(1).trim().split(/\s+/)[0];
+      buf = [];
+    } else if (line.trim()){
+      buf.push(line.trim());
+    }
+  }
+  if (name !== null) records.push([name, buf.join("").toUpperCase()]);
+  return records;
+}
+
+function parseFastq(text){
+  const records = [];
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 4){
+    const header = lines[i];
+    if (!header || !header.startsWith("@")) continue;
+    const seq = (lines[i+1] || "").trim().toUpperCase();
+    if (!seq) continue;
+    const name = header.slice(1).trim().split(/\s+/)[0];
+    records.push([name, seq]);
+  }
+  return records;
+}
+
+function readFilesAsText(fileList){
+  const files = Array.from(fileList);
+  return Promise.all(files.map(f => f.text())).then(texts => texts.join("\n"));
+}
+
+/* ── K-mer indexing ───────────────────────────────────────────────── */
+function kmerSet(seq, k){
+  const set = new Set();
+  if (seq.length < k) return set;
+  for (let i = 0; i <= seq.length - k; i++) set.add(seq.substring(i, i + k));
+  return set;
+}
+
+function buildReferenceIndex(fastaRecords, k){
+  const refKmerSets = new Map();   // refName -> Set<kmer>
+  const invIndex = new Map();      // kmer -> Set<refName>
+  const refPos = new Map();        // refName -> Map<kmer, firstPos>  (for seeding)
+  for (const [name, seq] of fastaRecords){
+    const set = new Set();
+    const posMap = new Map();
+    for (let i = 0; i <= seq.length - k; i++){
+      const km = seq.substring(i, i + k);
+      if (!set.has(km)){ set.add(km); posMap.set(km, i); }
+      let bucket = invIndex.get(km);
+      if (!bucket){ bucket = new Set(); invIndex.set(km, bucket); }
+      bucket.add(name);
+    }
+    refKmerSets.set(name, set);
+    refPos.set(name, posMap);
+  }
+  return { refKmerSets, invIndex, refPos };
+}
+
+/* ── K-mer containment matching (exact port of matcher/kmer.py) ─────── */
+function kmerContainmentMatch(readSeq, refKmerSets, k, minContainment){
+  const readKmers = new Set([...kmerSet(readSeq, k), ...kmerSet(revcomp(readSeq), k)]);
+  if (readKmers.size === 0) return { reference: null, containment: 0, matched: false };
+  let bestRef = null, bestScore = 0;
+  for (const [refName, refSet] of refKmerSets){
+    if (refSet.size === 0) continue;
+    let shared = 0;
+    const [small, big] = readKmers.size < refSet.size ? [readKmers, refSet] : [refSet, readKmers];
+    for (const km of small) if (big.has(km)) shared++;
+    const containment = shared / readKmers.size;
+    if (containment > bestScore){ bestScore = containment; bestRef = refName; }
+  }
+  const matched = bestScore >= minContainment;
+  return { reference: matched ? bestRef : null, containment: Math.round(bestScore * 10000) / 10000, matched };
+}
+
+/* ── Banded local aligner (seed-and-extend) ──────────────────────────
+   Not minimap2 — a from-scratch vanilla-JS approximation so the whole
+   app can run with zero server and zero external dependencies. Uses a
+   k-mer seed to anchor a band, then a banded Needleman-Wunsch-style DP
+   with free end-gaps on the reference side. Produces a 0..60 confidence
+   score analogous to MAPQ: high when the best hit clearly beats the
+   runner-up, low when hits are ambiguous. ─────────────────────────── */
+const BAND = 25, MATCH = 2, MISMATCH = -1, GAP = -2, NEG = -1e9;
+
+function bandedAlign(read, ref, anchorOffset, band){
+  const n = read.length;
+  const width = 2 * band + 1;
+  let prev = new Float64Array(width).fill(NEG);
+  let curr = new Float64Array(width).fill(NEG);
+
+  // row 0 (0 read chars consumed): free start anywhere within the band on ref
+  for (let d = 0; d < width; d++) prev[d] = 0;
+
+  let best = NEG;
+  for (let i = 1; i <= n; i++){
+    curr.fill(NEG);
+    const rc = read[i - 1];
+    for (let d = 0; d < width; d++){
+      const j = i + anchorOffset + d - band;
+      if (j < 0 || j > ref.length) continue;
+      let v = NEG;
+      if (j >= 1 && prev[d] > NEG){
+        const gc = ref[j - 1];
+        v = Math.max(v, prev[d] + (rc === gc ? MATCH : MISMATCH));
+      }
+      if (d + 1 < width && prev[d + 1] > NEG) v = Math.max(v, prev[d + 1] + GAP);
+      if (d - 1 >= 0 && j >= 1 && curr[d - 1] > NEG) v = Math.max(v, curr[d - 1] + GAP);
+      curr[d] = v;
+      if (i === n && v > best) best = v;
+    }
+    const tmp = prev; prev = curr; curr = tmp;
+  }
+  const maxPossible = n * MATCH;
+  const identity = maxPossible > 0 ? Math.max(0, best) / maxPossible : 0;
+  return Math.min(1, identity);
+}
+
+function alignReadToCandidate(readSeq, refSeq, refPosMap, k){
+  // find a seed: first shared k-mer between read and this reference
+  for (let i = 0; i <= readSeq.length - k; i++){
+    const km = readSeq.substring(i, i + k);
+    const gPos = refPosMap.get(km);
+    if (gPos !== undefined){
+      const anchorOffset = gPos - i; // ref index aligned with read index 0
+      return bandedAlign(readSeq, refSeq, anchorOffset, BAND);
+    }
+  }
+  return null; // no seed found — can't anchor a band
+}
+
+function mapqLikeMatch(readSeq, refSeqs, refIndex, k){
+  const strands = [readSeq, revcomp(readSeq)];
+  let candidates = new Map(); // refName -> voteCount, across both strands
+  for (const s of strands){
+    for (const km of kmerSet(s, k)){
+      const bucket = refIndex.invIndex.get(km);
+      if (!bucket) continue;
+      for (const ref of bucket) candidates.set(ref, (candidates.get(ref) || 0) + 1);
+    }
+  }
+  if (candidates.size === 0) return { reference: null, mapq: null, matched: false };
+
+  const top = [...candidates.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+  const scored = [];
+  for (const [refName] of top){
+    const refSeq = refSeqs.get(refName);
+    const posMap = refIndex.refPos.get(refName);
+    let bestIdentity = 0;
+    for (const s of strands){
+      const identity = alignReadToCandidate(s, refSeq, posMap, k);
+      if (identity !== null && identity > bestIdentity) bestIdentity = identity;
+    }
+    scored.push([refName, bestIdentity]);
+  }
+  scored.sort((a, b) => b[1] - a[1]);
+  const [bestRef, bestScore] = scored[0];
+  const secondScore = scored.length > 1 ? scored[1][1] : 0;
+  const gapFactor = Math.min(1, (bestScore - secondScore) / 0.1);
+  const mapq = Math.round(Math.min(60, 60 * bestScore) * Math.max(0, gapFactor));
+  return { reference: bestRef, mapq, matched: false }; // 'matched' decided by caller against threshold
+}
+
+/* ── UI plumbing ──────────────────────────────────────────────────── */
+const state = { fastaFiles: [], fastqFiles: [] };
+
+function setupDropzone(dzId, inputId, listId, onFiles){
+  const dz = document.getElementById(dzId);
+  const input = document.getElementById(inputId);
+  const list = document.getElementById(listId);
+  dz.addEventListener("click", () => input.click());
+  input.addEventListener("change", () => { onFiles(input.files); renderList(); });
+  dz.addEventListener("dragover", e => { e.preventDefault(); dz.classList.add("over"); });
+  dz.addEventListener("dragleave", () => dz.classList.remove("over"));
+  dz.addEventListener("drop", e => {
+    e.preventDefault(); dz.classList.remove("over");
+    onFiles(e.dataTransfer.files); renderList();
+  });
+  function renderList(){
+    list.innerHTML = "";
+    const files = inputId === "input-fasta" ? state.fastaFiles : state.fastqFiles;
+    for (const f of files){
+      const d = document.createElement("div");
+      d.textContent = `${f.name} (${(f.size/1024).toFixed(1)}KB)`;
+      list.appendChild(d);
+    }
+  }
+}
+setupDropzone("dz-fasta", "input-fasta", "list-fasta", files => { state.fastaFiles = Array.from(files); });
+setupDropzone("dz-fastq", "input-fastq", "list-fastq", files => { state.fastqFiles = Array.from(files); });
+
+const rngMapq = document.getElementById("rng-mapq"), valMapq = document.getElementById("val-mapq");
+rngMapq.addEventListener("input", () => valMapq.textContent = rngMapq.value);
+const rngContainment = document.getElementById("rng-containment"), valContainment = document.getElementById("val-containment");
+rngContainment.addEventListener("input", () => valContainment.textContent = parseFloat(rngContainment.value).toFixed(2));
+const rngK = document.getElementById("rng-k"), valK = document.getElementById("val-k");
+rngK.addEventListener("input", () => valK.textContent = rngK.value);
+
+function csvEscape(v){
+  if (v === null || v === undefined) return "";
+  const s = String(v);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
+}
+function toCsv(rows, cols){
+  const lines = [cols.join(",")];
+  for (const r of rows) lines.push(cols.map(c => csvEscape(r[c])).join(","));
+  return lines.join("\n");
+}
+function downloadCsv(rows, cols, filename){
+  const blob = new Blob([toCsv(rows, cols)], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function renderTable(tableEl, rows, cols, statusCol){
+  tableEl.innerHTML = "";
+  const thead = document.createElement("thead");
+  const trh = document.createElement("tr");
+  for (const c of cols){ const th = document.createElement("th"); th.textContent = c; trh.appendChild(th); }
+  thead.appendChild(trh); tableEl.appendChild(thead);
+  const tbody = document.createElement("tbody");
+  for (const r of rows){
+    const tr = document.createElement("tr");
+    for (const c of cols){
+      const td = document.createElement("td");
+      if (c === statusCol){
+        const span = document.createElement("span");
+        const v = r[c];
+        const cls = (v === "Matched (both methods)" || v === "Matched" || v === true) ? "status-both" :
+          (v === "Matched (one method only)" ? "status-one" : "status-none");
+        span.className = "status-pill " + cls;
+        span.textContent = typeof v === "boolean" ? String(v) : v;
+        td.appendChild(span);
+      } else {
+        td.textContent = r[c] === null || r[c] === undefined ? "—" : r[c];
+      }
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  tableEl.appendChild(tbody);
+}
+
+async function yieldToUI(){ return new Promise(r => setTimeout(r, 0)); }
+
+async function run(){
+  const runBtn = document.getElementById("btn-run");
+  const progressWrap = document.getElementById("progress-wrap");
+  const progressFill = document.getElementById("progress-bar-fill");
+  const progressText = document.getElementById("progress-text");
+
+  if (state.fastaFiles.length === 0){ alert("Upload at least one reference FASTA file."); return; }
+  if (state.fastqFiles.length === 0){ alert("Upload at least one FASTQ read file."); return; }
+  const runAlignment = document.getElementById("chk-mapq").checked;
+  const runKmer = document.getElementById("chk-kmer").checked;
+  if (!runAlignment && !runKmer){ alert("Enable at least one matching method."); return; }
+
+  runBtn.disabled = true;
+  progressWrap.style.display = "block";
+  progressFill.style.width = "0%";
+  progressText.textContent = "Reading files...";
+  document.getElementById("results").style.display = "none";
+  await yieldToUI();
+
+  const k = parseInt(rngK.value, 10);
+  const mapqThreshold = parseInt(rngMapq.value, 10);
+  const minContainment = parseFloat(rngContainment.value);
+
+  const fastaText = await readFilesAsText(state.fastaFiles);
+  const fastqText = await readFilesAsText(state.fastqFiles);
+  const fastaRecords = parseFasta(fastaText);
+  const fastqRecords = parseFastq(fastqText);
+  const refNames = fastaRecords.map(r => r[0]);
+  const refSeqs = new Map(fastaRecords);
+
+  const refIndex = buildReferenceIndex(fastaRecords, k);
+
+  const alignCounts = new Map(refNames.map(r => [r, 0]));
+  const kmerCounts = new Map(refNames.map(r => [r, 0]));
+  const alignRows = [], kmerRows = [];
+
+  const total = fastqRecords.length;
+  for (let i = 0; i < total; i++){
+    const [name, seq] = fastqRecords[i];
+
+    if (runAlignment){
+      const res = mapqLikeMatch(seq, refSeqs, refIndex, k);
+      const matched = res.reference !== null && res.mapq >= mapqThreshold;
+      if (matched) alignCounts.set(res.reference, alignCounts.get(res.reference) + 1);
+      alignRows.push({ read_id: name, reference: res.reference, mapq: res.mapq, matched });
+    }
+    if (runKmer){
+      const res = kmerContainmentMatch(seq, refIndex.refKmerSets, k, minContainment);
+      if (res.matched) kmerCounts.set(res.reference, kmerCounts.get(res.reference) + 1);
+      kmerRows.push({ read_id: name, reference: res.matched ? res.reference : null, containment: res.containment, matched: res.matched });
+    }
+
+    if (i % 25 === 0 || i === total - 1){
+      const pct = total ? Math.round(((i + 1) / total) * 100) : 100;
+      progressFill.style.width = pct + "%";
+      progressText.textContent = `Matching reads... ${i + 1} / ${total}`;
+      await yieldToUI();
+    }
+  }
+
+  progressWrap.style.display = "none";
+  runBtn.disabled = false;
+  renderResults({ refNames, total, runAlignment, runKmer, mapqThreshold, minContainment,
+                   alignCounts, kmerCounts, alignRows, kmerRows });
+}
+
+function renderResults(ctx){
+  const { refNames, total, runAlignment, runKmer, mapqThreshold, minContainment,
+          alignCounts, kmerCounts, alignRows, kmerRows } = ctx;
+
+  document.getElementById("results").style.display = "block";
+
+  // summary cards
+  const cards = document.getElementById("summary-cards");
+  cards.innerHTML = "";
+  function card(label, big){
+    const d = document.createElement("div"); d.className = "card";
+    d.innerHTML = `<div class="lbl">${label}</div><div class="big">${big}</div>`;
+    cards.appendChild(d);
+  }
+  if (runAlignment){
+    const matchedRefs = [...alignCounts.values()].filter(v => v > 0).length;
+    const matchedReads = alignRows.filter(r => r.matched).length;
+    card(`References matched (MAPQ-like ≥ ${mapqThreshold})`, `${matchedRefs} / ${refNames.length}`);
+    card("Reads matched (alignment)", total ? `${matchedReads} / ${total} (${(100*matchedReads/total).toFixed(1)}%)` : "0 / 0");
+  }
+  if (runKmer){
+    const matchedRefs = [...kmerCounts.values()].filter(v => v > 0).length;
+    const matchedReads = kmerRows.filter(r => r.matched).length;
+    card(`References matched (containment ≥ ${minContainment})`, `${matchedRefs} / ${refNames.length}`);
+    card("Reads matched (k-mer)", total ? `${matchedReads} / ${total} (${(100*matchedReads/total).toFixed(1)}%)` : "0 / 0");
+  }
+
+  // per-reference report
+  const refRows = refNames.map(r => {
+    const a = runAlignment ? alignCounts.get(r) : null;
+    const kc = runKmer ? kmerCounts.get(r) : null;
+    let status;
+    if (runAlignment && runKmer){
+      const aOk = a > 0, kOk = kc > 0;
+      status = aOk && kOk ? "Matched (both methods)" : (aOk || kOk ? "Matched (one method only)" : "No confident match");
+    } else if (runAlignment){
+      status = a > 0 ? "Matched" : "No confident match";
+    } else {
+      status = kc > 0 ? "Matched" : "No confident match";
+    }
+    const row = { reference: r };
+    if (runAlignment) row[`reads_mapq_like_ge_${mapqThreshold}`] = a;
+    if (runKmer) row["reads_matched_kmer"] = kc;
+    row.status = status;
+    return row;
+  }).sort((x, y) => {
+    const xv = (runAlignment ? x[`reads_mapq_like_ge_${mapqThreshold}`] : x.reads_matched_kmer) || 0;
+    const yv = (runAlignment ? y[`reads_mapq_like_ge_${mapqThreshold}`] : y.reads_matched_kmer) || 0;
+    return yv - xv;
+  });
+
+  const cols = ["reference"];
+  if (runAlignment) cols.push(`reads_mapq_like_ge_${mapqThreshold}`);
+  if (runKmer) cols.push("reads_matched_kmer");
+  cols.push("status");
+
+  let activeFilter = "all";
+  const filterRow = document.getElementById("ref-filter-row");
+  const statuses = ["all", ...new Set(refRows.map(r => r.status))];
+  function renderFilterChips(){
+    filterRow.innerHTML = "";
+    for (const s of statuses){
+      const chip = document.createElement("div");
+      chip.className = "filter-chip" + (s === activeFilter ? " active" : "");
+      chip.textContent = s === "all" ? "All" : s;
+      chip.addEventListener("click", () => { activeFilter = s; renderFilterChips(); renderRefTable(); });
+      filterRow.appendChild(chip);
+    }
+  }
+  function renderRefTable(){
+    const filtered = activeFilter === "all" ? refRows : refRows.filter(r => r.status === activeFilter);
+    renderTable(document.getElementById("ref-table"), filtered, cols, "status");
+  }
+  renderFilterChips();
+  renderRefTable();
+
+  const unmatched = refRows.filter(r => r.status === "No confident match");
+  const warnBox = document.getElementById("ref-warning");
+  warnBox.innerHTML = "";
+  const box = document.createElement("div");
+  if (unmatched.length){
+    box.className = "warn-box";
+    box.textContent = `${unmatched.length} reference sequence(s) had no confidently matching reads: ${unmatched.map(r=>r.reference).join(", ")}`;
+  } else {
+    box.className = "ok-box";
+    box.textContent = "Every reference sequence had at least one confidently matching read.";
+  }
+  warnBox.appendChild(box);
+
+  document.getElementById("btn-dl-ref").onclick = () => downloadCsv(refRows, cols, "per_reference_report.csv");
+
+  // per-read report tabs
+  const tabsEl = document.getElementById("read-tabs");
+  const pagesEl = document.getElementById("read-tabpages");
+  tabsEl.innerHTML = ""; pagesEl.innerHTML = "";
+  const tabsDef = [];
+  if (runAlignment) tabsDef.push({ id: "mapq", label: "MAPQ-like alignment", rows: alignRows, cols: ["read_id","reference","mapq","matched"] });
+  if (runKmer) tabsDef.push({ id: "kmer", label: "K-mer", rows: kmerRows, cols: ["read_id","reference","containment","matched"] });
+
+  tabsDef.forEach((t, idx) => {
+    const tab = document.createElement("div");
+    tab.className = "tab" + (idx === 0 ? " active" : "");
+    tab.textContent = t.label;
+    tab.addEventListener("click", () => {
+      document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
+      document.querySelectorAll(".tabpage").forEach(x => x.classList.remove("active"));
+      tab.classList.add("active");
+      document.getElementById("page-" + t.id).classList.add("active");
+    });
+    tabsEl.appendChild(tab);
+
+    const page = document.createElement("div");
+    page.className = "tabpage" + (idx === 0 ? " active" : "");
+    page.id = "page-" + t.id;
+    const unmatchedN = t.rows.filter(r => !r.matched).length;
+    page.innerHTML = `<div class="note">${unmatchedN} of ${t.rows.length} reads did not pass the threshold.</div>
+      <div class="tablewrap" style="margin-top:10px" id="tablewrap-${t.id}"></div>
+      <button class="btn btn-small" style="margin-top:12px" id="dl-${t.id}">Download per-read ${t.label} results (CSV)</button>`;
+    pagesEl.appendChild(page);
+    renderTable(document.getElementById(`tablewrap-${t.id}`).appendChild(document.createElement("table")), t.rows, t.cols, "matched");
+    document.getElementById(`dl-${t.id}`).addEventListener("click", () => downloadCsv(t.rows, t.cols, `per_read_${t.id}_results.csv`));
+  });
+
+  document.getElementById("results").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+document.getElementById("btn-run").addEventListener("click", run);
+</script>
+</body>
+</html>
