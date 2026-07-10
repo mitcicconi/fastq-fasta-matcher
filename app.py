@@ -20,14 +20,10 @@ import streamlit as st
 
 from matcher.alignment import run_alignment_match
 from matcher.io_utils import cleanup, normalize_references_to_fasta, read_fastq_records, save_uploaded_files
-from matcher.junction import load_junction_reference, match_reads_by_junction
+from matcher.junction import CONSTRUCTS, POOLS, REFDB_DIR, load_junction_reference, match_reads_by_junction
 from matcher.kmer import build_reference_kmer_index, match_reads_by_kmer, summarize_by_reference
 
 st.set_page_config(page_title="FASTQ ↔ FASTA Matcher", layout="wide")
-
-POOLS = ["T1", "T2", "T3", "T4", "T5", "T6"]
-CONSTRUCTS = {"TadA": "tada", "Insertion site": "insertion_site"}
-REFDB_DIR = "reference_databases"
 
 st.title("FASTQ ↔ FASTA Matcher")
 st.caption(

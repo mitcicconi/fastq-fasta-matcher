@@ -18,9 +18,58 @@ and why 1-mismatch tolerance is the right ceiling, not an arbitrary choice.
 """
 
 from Bio import SeqIO
+from Bio.Seq import Seq
+from Bio.SeqRecord import SeqRecord
+
+POOLS = ["T1", "T2", "T3", "T4", "T5", "T6"]
+CONSTRUCTS = {"TadA": "tada", "Insertion site": "insertion_site"}
+REFDB_DIR = "reference_databases"
 
 _BASES = "ACGT"
 _COMPLEMENT = str.maketrans("ACGTacgtNn", "TGCAtgcaNn")
+
+
+def load_payload_sequence(path):
+    """Reads a new payload sequence from either a FASTA file or a plain-text file."""
+    if path.lower().endswith((".fasta", ".fa", ".fna")):
+        recs = list(SeqIO.parse(path, "fasta"))
+        if not recs:
+            raise ValueError(f"No sequence found in {path}")
+        return str(recs[0].seq).upper()
+    with open(path) as fh:
+        return "".join(line.strip() for line in fh if not line.startswith(">")).upper()
+
+
+def swap_payload(in_fasta, new_payload, out_fasta, flank=150):
+    """Rebuilds a junction reference FASTA with a new payload, keeping the flanks
+    (and therefore each variant's position/codon mapping) identical.
+
+    Returns (n_records, old_payload_len, new_payload_len).
+    """
+    new_payload = new_payload.upper()
+    recs = list(SeqIO.parse(in_fasta, "fasta"))
+    if not recs:
+        raise ValueError(f"No sequences found in {in_fasta}")
+
+    old_payload_len = len(recs[0].seq) - 2 * flank
+    if old_payload_len <= 0:
+        raise ValueError(f"Flank ({flank}bp x2) is longer than the record itself")
+
+    out_recs = []
+    for rec in recs:
+        seq = str(rec.seq).upper()
+        if len(seq) - 2 * flank != old_payload_len:
+            raise ValueError(
+                f"Record {rec.id} has a different length than the rest of {in_fasta} "
+                "— is this really a single pool's junction file?"
+            )
+        left = seq[:flank]
+        right = seq[len(seq) - flank :]
+        new_seq = left + new_payload + right
+        out_recs.append(SeqRecord(Seq(new_seq), id=rec.id, description=""))
+
+    SeqIO.write(out_recs, out_fasta, "fasta")
+    return len(out_recs), old_payload_len, len(new_payload)
 
 
 def revcomp(seq):

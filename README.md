@@ -94,25 +94,32 @@ side of the insertion junction, 1-mismatch-tolerant matching, reads counted
 if at least one side gives an unambiguous call — reused against whichever
 payload is actually between the flanks, so the identical algorithm serves
 both the TadA-inserted and pre-TadA insertion-site-only constructs. See
-`reference_databases/README.md` for the file layout, and
-`scripts/swap_junction_payload.py` for how the insertion-site databases were
-derived from the TadA ones (same flanks/position-mapping, different payload
-swapped in). Browser-version only has the two general-purpose methods above;
-this mode is Python-only.
+`reference_databases/README.md` for the file layout. Browser-version only
+has the two general-purpose methods above; this mode is Python-only.
+
+To build a new database (e.g. if the insertion-site sequence changes), use
+the **Build Junction Database** page — it's a second page of the same
+`streamlit run app.py` process (Streamlit auto-detects `pages/`), with file
+pickers and a paste-in box instead of command-line arguments. It can save
+straight into `reference_databases/` so the result shows up immediately in
+the matcher's pool/construct dropdowns. `scripts/swap_junction_payload.py`
+does the same thing from the command line, if you prefer that.
 
 ## Project layout
 
 ```
 index.html               Browser version — self-contained, served via GitHub Pages
 app.py                   Streamlit UI (Python version)
+pages/
+  1_Build_Junction_Database.py   UI for deriving a new junction database (payload swap)
 matcher/
   alignment.py            MAPQ alignment matching (mappy / real minimap2)
   kmer.py                 K-mer containment matching
-  junction.py              Junction-barcode matching (TadA insertion library specific)
+  junction.py              Junction-barcode matching + database-building logic (TadA library specific)
   io_utils.py              File upload / FASTA / GenBank / SnapGene / FASTQ helpers
 reference_databases/      Bundled junction-barcode reference FASTAs (T1–T6 x TadA/insertion-site)
 sample_data/              Tiny synthetic example for demoing the general-purpose methods
 scripts/
   generate_sample_data.py  Regenerates sample_data/
-  swap_junction_payload.py Derives a junction database with a new payload swapped in
+  swap_junction_payload.py CLI for building a junction database with a new payload (see pages/ for the UI)
 ```
