@@ -40,9 +40,45 @@ def load_payload_sequence(path):
         return "".join(line.strip() for line in fh if not line.startswith(">")).upper()
 
 
-def swap_payload(in_fasta, new_payload, out_fasta, flank=150):
+def _detect_shared_payload_len(seqs, flank):
+    """Finds the payload length shared by every sequence in `seqs`, starting
+    right after `flank`bp. The payload is identical across every record in a
+    single-pool junction file (same construct inserted at every position),
+    while the flanking IscB sequence differs by variant — so the payload is
+    exactly the longest prefix (after the left flank) shared by every record.
+    Robust to the right flank not being the same length as `flank` (only
+    true when the payload happens to be perfectly centered — it often isn't,
+    e.g. when a few bp of what looks like flank is actually still payload).
+    """
+    min_len = min(len(s) for s in seqs)
+    if flank >= min_len:
+        raise ValueError(f"Flank ({flank}bp) is longer than the shortest record ({min_len}bp)")
+
+    after_flank = [s[flank:] for s in seqs]
+    payload_len = min(len(s) for s in after_flank)
+    reference = after_flank[0]
+    for s in after_flank[1:]:
+        limit = min(payload_len, len(s))
+        i = 0
+        while i < limit and reference[i] == s[i]:
+            i += 1
+        payload_len = min(payload_len, i)
+
+    if payload_len <= 0:
+        raise ValueError(
+            "Could not detect a shared payload — is this really a single pool's "
+            "junction file, all with the same construct inserted?"
+        )
+    return payload_len
+
+
+def swap_payload(in_fasta, new_payload, out_fasta, flank=150, old_payload_len=None):
     """Rebuilds a junction reference FASTA with a new payload, keeping the flanks
     (and therefore each variant's position/codon mapping) identical.
+
+    old_payload_len defaults to auto-detected (the prefix after `flank`bp
+    shared by every record — see _detect_shared_payload_len). Pass it
+    explicitly to override that.
 
     Returns (n_records, old_payload_len, new_payload_len).
     """
@@ -51,20 +87,24 @@ def swap_payload(in_fasta, new_payload, out_fasta, flank=150):
     if not recs:
         raise ValueError(f"No sequences found in {in_fasta}")
 
-    old_payload_len = len(recs[0].seq) - 2 * flank
+    seqs = [str(rec.seq).upper() for rec in recs]
+    ref_len = len(seqs[0])
+    if any(len(s) != ref_len for s in seqs):
+        raise ValueError(f"Not every record in {in_fasta} has the same length — is this really a single pool's junction file?")
+
+    if old_payload_len is None:
+        old_payload_len = _detect_shared_payload_len(seqs, flank)
     if old_payload_len <= 0:
         raise ValueError(f"Flank ({flank}bp x2) is longer than the record itself")
+    if flank + old_payload_len > ref_len:
+        raise ValueError(
+            f"flank + old_payload_len ({flank + old_payload_len}bp) exceeds the record length ({ref_len}bp)"
+        )
 
     out_recs = []
-    for rec in recs:
-        seq = str(rec.seq).upper()
-        if len(seq) - 2 * flank != old_payload_len:
-            raise ValueError(
-                f"Record {rec.id} has a different length than the rest of {in_fasta} "
-                "— is this really a single pool's junction file?"
-            )
+    for rec, seq in zip(recs, seqs):
         left = seq[:flank]
-        right = seq[len(seq) - flank :]
+        right = seq[flank + old_payload_len :]
         new_seq = left + new_payload + right
         out_recs.append(SeqRecord(Seq(new_seq), id=rec.id, description=""))
 
@@ -100,33 +140,38 @@ def find_anchor(read_seq, anchor, max_mm=1):
 
 
 def load_junction_reference(fasta_path, flank=150, bc_len=20):
-    """Loads a [flank][payload][flank] FASTA and derives per-variant barcodes.
+    """Loads a [left flank][payload][right flank] FASTA and derives per-variant
+    barcodes. The left flank is exactly `flank`bp; the right flank is whatever's
+    left after the payload — NOT assumed to also be `flank`bp, since that's only
+    true when the payload happens to be perfectly centered.
 
-    Every record must have the same total length (same payload length across
-    the file — this holds for a single pool's junction database). Returns
-    (left_barcodes, right_barcodes, payload_seq, payload_len) where the two
-    barcode dicts map variant id -> 20bp barcode sequence.
+    Payload length is auto-detected rather than assumed: the payload is
+    identical across every record in a single-pool junction file (same
+    construct inserted at every position), while the flanking IscB sequence
+    differs by variant. So the payload is exactly the longest prefix (starting
+    right after the left flank) shared by every record — this finds the
+    payload/right-flank boundary without needing to know the payload's length
+    or content in advance, and works whether or not the right flank happens to
+    equal `flank`bp.
+
+    Returns (left_barcodes, right_barcodes, payload_seq, payload_len) where the
+    two barcode dicts map variant id -> 20bp barcode sequence.
     """
     recs = list(SeqIO.parse(fasta_path, "fasta"))
     if not recs:
         raise ValueError(f"No sequences found in {fasta_path}")
 
-    payload_len = len(recs[0].seq) - 2 * flank
-    if payload_len <= 0:
-        raise ValueError(f"Flank ({flank}bp x2) is longer than the record itself")
+    seqs = [str(r.seq).upper() for r in recs]
+    try:
+        payload_len = _detect_shared_payload_len(seqs, flank)
+    except ValueError as exc:
+        raise ValueError(f"{exc} ({fasta_path})") from exc
 
     left_barcodes, right_barcodes = {}, {}
-    payload_seq = None
-    for rec in recs:
-        seq = str(rec.seq).upper()
-        if len(seq) - 2 * flank != payload_len:
-            raise ValueError(
-                f"Record {rec.id} has a different payload length than the rest of {fasta_path}"
-            )
+    payload_seq = seqs[0][flank : flank + payload_len]
+    for rec, seq in zip(recs, seqs):
         left_barcodes[rec.id] = seq[flank - bc_len : flank]
         right_barcodes[rec.id] = seq[flank + payload_len : flank + payload_len + bc_len]
-        if payload_seq is None:
-            payload_seq = seq[flank : flank + payload_len]
 
     return left_barcodes, right_barcodes, payload_seq, payload_len
 
@@ -273,3 +318,26 @@ def match_reads_by_junction(
         "pct_assigned": round(100 * n_assigned / n_reads, 1) if n_reads else 0,
     }
     return rows, qc
+
+
+def detect_best_pool(fastq_records, construct_suffix, refdb_dir, pools=POOLS, sample_size=500, mm_allow=1):
+    """Tests a sample of reads against every pool's database for a given
+    construct, to catch a pool/file mismatch (a FASTQ file's name/label not
+    actually matching the pool its reads came from) before running the full
+    match. Returns (pool, pct_assigned, variants_matched, n_variants) rows,
+    sorted best-first.
+    """
+    import os
+
+    sample = fastq_records[:sample_size]
+    results = []
+    for pool in pools:
+        path = os.path.join(refdb_dir, f"{pool}_{construct_suffix}.fasta")
+        if not os.path.exists(path):
+            continue
+        left_bc, right_bc, payload_seq, payload_len = load_junction_reference(path)
+        rows, qc = match_reads_by_junction(sample, left_bc, right_bc, payload_seq, payload_len, mm_allow=mm_allow)
+        matched = sum(1 for r in rows if r["mapped_reads"] > 0)
+        results.append({"pool": pool, "pct_assigned": qc["pct_assigned"], "variants_matched": matched, "n_variants": len(rows)})
+    results.sort(key=lambda r: r["pct_assigned"], reverse=True)
+    return results

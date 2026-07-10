@@ -34,9 +34,19 @@ if __name__ == "__main__":
     parser.add_argument(
         "--flank", type=int, default=150, help="Flank length on each side (default 150, matches *pipeline_junction.py)"
     )
+    parser.add_argument(
+        "--old-payload-len",
+        type=int,
+        default=None,
+        help="Override the old payload's length instead of deriving it from --flank. Use this when the old "
+        "payload actually extends further than the nominal flank boundary (e.g. a few bp of linker got bucketed "
+        "into what looked like flank) — the right flank then comes out shorter than --flank, whatever's left.",
+    )
     args = parser.parse_args()
 
     payload = load_payload_sequence(args.new_payload)
-    n, old_len, new_len = swap_payload(args.in_fasta, payload, args.out_fasta, flank=args.flank)
+    n, old_len, new_len = swap_payload(
+        args.in_fasta, payload, args.out_fasta, flank=args.flank, old_payload_len=args.old_payload_len
+    )
     print(f"Wrote {n} records to {args.out_fasta}")
     print(f"  old payload length: {old_len}bp -> new payload length: {new_len}bp")

@@ -20,7 +20,14 @@ import streamlit as st
 
 from matcher.alignment import run_alignment_match
 from matcher.io_utils import cleanup, normalize_references_to_fasta, read_fastq_records, save_uploaded_files
-from matcher.junction import CONSTRUCTS, POOLS, REFDB_DIR, load_junction_reference, match_reads_by_junction
+from matcher.junction import (
+    CONSTRUCTS,
+    POOLS,
+    REFDB_DIR,
+    detect_best_pool,
+    load_junction_reference,
+    match_reads_by_junction,
+)
 from matcher.kmer import build_reference_kmer_index, match_reads_by_kmer, summarize_by_reference
 
 st.set_page_config(page_title="FASTQ ↔ FASTA Matcher", layout="wide")
@@ -61,10 +68,47 @@ if input_mode == "Bundled junction database":
             type=["fastq", "fq"],
             accept_multiple_files=True,
         )
+        detect_click = st.button("Detect which pool this file belongs to", use_container_width=True)
         go = st.button("Run junction matching", type="primary", use_container_width=True)
 
+    if detect_click:
+        if not fastq_files:
+            st.error("Upload a FASTQ read file first.")
+            st.stop()
+        detect_path = save_uploaded_files(fastq_files, ".fastq")
+        try:
+            with st.spinner("Testing a sample of reads against every pool..."):
+                fastq_records = read_fastq_records(detect_path)
+                results = detect_best_pool(fastq_records, CONSTRUCTS[construct_label], REFDB_DIR, sample_size=500, mm_allow=mm_allow)
+        finally:
+            cleanup(detect_path)
+
+        if not results:
+            st.error(f"No {construct_label} databases found in {REFDB_DIR}/ to test against.")
+        else:
+            st.subheader(f"Pool detection — {construct_label}, first {min(500, len(fastq_records))} reads")
+            st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
+            best = results[0]
+            if best["pct_assigned"] > 0:
+                st.success(
+                    f"Best match: **{best['pool']}** ({best['pct_assigned']}% assigned, "
+                    f"{best['variants_matched']}/{best['n_variants']} variants). "
+                    "Select it in the Pool dropdown and click Run junction matching."
+                )
+            else:
+                st.warning(
+                    "No pool got any reads assigned — this file may not match any bundled "
+                    "database at all for this construct. Double-check the construct (TadA vs "
+                    "Insertion site) and try again."
+                )
+        st.stop()
+
     if not go:
-        st.info("Pick a pool and construct, upload FASTQ(s), then click **Run junction matching**.")
+        st.info(
+            "Pick a pool and construct, upload FASTQ(s), then click **Run junction matching**. "
+            "Not sure which pool a file is? Click **Detect which pool this file belongs to** first — "
+            "file names aren't always a reliable guide to which pool the reads actually came from."
+        )
         st.markdown(
             "**How it works**\n\n"
             "This reuses the same strategy as `*pipeline_kmer.py`: each variant has "

@@ -4,3 +4,7 @@ __pycache__/
 venv/
 .DS_Store
 .streamlit/secrets.toml
+
+# Raw sequencing run data dropped in for local testing — not part of the repo
+*_fastq/
+*_fastq (*)/
