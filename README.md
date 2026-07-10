@@ -23,7 +23,8 @@ There are two versions of this tool in the repo:
 
 Use the browser version for a quick check with no install. Use the Python
 version when you want results computed by the actual minimap2 aligner
-(same engine used by most long-read sequencing pipelines).
+(same engine used by most long-read sequencing pipelines), or when you want
+the TadA-insertion-library-specific junction-barcode mode described below.
 
 ## Methods
 
@@ -83,6 +84,22 @@ Biopython), so it deploys as-is on
 [Streamlit Community Cloud](https://streamlit.io/cloud): point it at this
 repo's `app.py` and it builds from `requirements.txt` directly.
 
+### Bundled junction database mode (TadA insertion library)
+
+A third mode, specific to this project's 495-variant TadA insertion library:
+instead of uploading a FASTA, pick a pool (T1–T6) and construct (TadA or the
+insertion-site intermediate) from a dropdown. This runs the same
+junction-barcode strategy as `*pipeline_kmer.py` — a 20bp barcode on each
+side of the insertion junction, 1-mismatch-tolerant matching, reads counted
+if at least one side gives an unambiguous call — reused against whichever
+payload is actually between the flanks, so the identical algorithm serves
+both the TadA-inserted and pre-TadA insertion-site-only constructs. See
+`reference_databases/README.md` for the file layout, and
+`scripts/swap_junction_payload.py` for how the insertion-site databases were
+derived from the TadA ones (same flanks/position-mapping, different payload
+swapped in). Browser-version only has the two general-purpose methods above;
+this mode is Python-only.
+
 ## Project layout
 
 ```
@@ -91,7 +108,11 @@ app.py                   Streamlit UI (Python version)
 matcher/
   alignment.py            MAPQ alignment matching (mappy / real minimap2)
   kmer.py                 K-mer containment matching
+  junction.py              Junction-barcode matching (TadA insertion library specific)
   io_utils.py              File upload / FASTA / GenBank / SnapGene / FASTQ helpers
-sample_data/              Tiny synthetic example for demoing either version
-scripts/generate_sample_data.py   Regenerates sample_data/
+reference_databases/      Bundled junction-barcode reference FASTAs (T1–T6 x TadA/insertion-site)
+sample_data/              Tiny synthetic example for demoing the general-purpose methods
+scripts/
+  generate_sample_data.py  Regenerates sample_data/
+  swap_junction_payload.py Derives a junction database with a new payload swapped in
 ```

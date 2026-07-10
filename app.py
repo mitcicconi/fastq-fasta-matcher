@@ -1,22 +1,33 @@
 """FASTQ ↔ FASTA Matcher
 A user-friendly UI for checking which sequencing reads match which reference
-sequences, using two independent methods:
+sequences, using two independent general-purpose methods:
 
   1. MAPQ-thresholded alignment (minimap2 via the mappy binding)
   2. K-mer containment matching (orientation-independent, no external tools)
 
+...or, for the TadA insertion library specifically, a third mode that reuses
+the project's own junction-barcode strategy (see matcher/junction.py) against
+a pre-built local reference database instead of an uploaded FASTA.
+
 Upload your reference FASTA(s) and read FASTQ(s), pick your thresholds, and
 get a per-reference and per-read match/no-match report you can download.
 """
+
+import os
 
 import pandas as pd
 import streamlit as st
 
 from matcher.alignment import run_alignment_match
 from matcher.io_utils import cleanup, normalize_references_to_fasta, read_fastq_records, save_uploaded_files
+from matcher.junction import load_junction_reference, match_reads_by_junction
 from matcher.kmer import build_reference_kmer_index, match_reads_by_kmer, summarize_by_reference
 
 st.set_page_config(page_title="FASTQ ↔ FASTA Matcher", layout="wide")
+
+POOLS = ["T1", "T2", "T3", "T4", "T5", "T6"]
+CONSTRUCTS = {"TadA": "tada", "Insertion site": "insertion_site"}
+REFDB_DIR = "reference_databases"
 
 st.title("FASTQ ↔ FASTA Matcher")
 st.caption(
@@ -26,7 +37,130 @@ st.caption(
 )
 
 with st.sidebar:
-    st.header("Inputs")
+    st.header("Reference input")
+    input_mode = st.radio(
+        "How do you want to provide references?",
+        ["Upload your own files", "Bundled junction database"],
+        help="'Bundled junction database' uses the project's junction-barcode "
+        f"strategy against pre-built reference files in {REFDB_DIR}/ instead of "
+        "an upload — pick a pool and construct from the dropdowns below.",
+    )
+
+if input_mode == "Bundled junction database":
+    with st.sidebar:
+        pool = st.selectbox("Pool", POOLS)
+        construct_label = st.selectbox("Construct", list(CONSTRUCTS.keys()))
+        mm_allow = st.slider(
+            "Junction mismatch tolerance",
+            min_value=0,
+            max_value=2,
+            value=1,
+            help="Max mismatches allowed per 20bp junction barcode. 1 is the "
+            "empirically-verified safe ceiling for this panel — see project "
+            "memory for the pairwise-distance analysis behind that number. "
+            "Going higher risks conflating specific close variant pairs.",
+        )
+        fastq_files = st.file_uploader(
+            "Read FASTQ(s) — your sequencing results",
+            type=["fastq", "fq"],
+            accept_multiple_files=True,
+        )
+        go = st.button("Run junction matching", type="primary", use_container_width=True)
+
+    if not go:
+        st.info("Pick a pool and construct, upload FASTQ(s), then click **Run junction matching**.")
+        st.markdown(
+            "**How it works**\n\n"
+            "This reuses the same strategy as `*pipeline_kmer.py`: each variant has "
+            "a 20bp barcode on each side of the insertion junction, reads are scanned "
+            "for both with 1-mismatch tolerance, and a read counts if at least one "
+            "side gives an unambiguous call. Works identically whether the payload "
+            "between the junctions is TadA or the insertion-site placeholder — only "
+            "the flanking barcodes (and therefore the position mapping) matter."
+        )
+        st.stop()
+
+    if not fastq_files:
+        st.error("Upload at least one FASTQ read file.")
+        st.stop()
+
+    ref_path = os.path.join(REFDB_DIR, f"{pool}_{CONSTRUCTS[construct_label]}.fasta")
+    if not os.path.exists(ref_path):
+        st.error(
+            f"No local database found at `{ref_path}` — see `{REFDB_DIR}/README.md` for "
+            "how to build one (including how to regenerate an insertion-site database "
+            "with `scripts/swap_junction_payload.py`)."
+        )
+        st.stop()
+
+    fastq_path = save_uploaded_files(fastq_files, ".fastq")
+    try:
+        with st.spinner("Loading junction reference and reads..."):
+            left_bc, right_bc, payload_seq, payload_len = load_junction_reference(ref_path)
+            fastq_records = read_fastq_records(fastq_path)
+
+        st.success(
+            f"Loaded {len(left_bc)} variant(s) from {pool} / {construct_label} "
+            f"(payload {payload_len}bp) and {len(fastq_records)} read(s)."
+        )
+
+        with st.spinner("Running junction barcode matching..."):
+            rows, qc = match_reads_by_junction(
+                fastq_records, left_bc, right_bc, payload_seq, payload_len, mm_allow=mm_allow
+            )
+        report_df = pd.DataFrame(rows).sort_values("mapped_reads", ascending=False)
+
+        col_a, col_b, col_c = st.columns(3)
+        col_a.metric("Reads scanned", f"{qc['n_reads']:,}")
+        col_b.metric(
+            "Reads assigned",
+            f"{qc['assigned']:,} / {qc['n_reads']:,} ({qc['pct_assigned']}%)",
+        )
+        col_c.metric(
+            "Variants matched",
+            f"{(report_df['mapped_reads'] > 0).sum()} / {len(report_df)}",
+        )
+        st.caption(
+            f"Concordant: {qc['concordant']:,}  ·  Left-only: {qc['left_only']:,}  ·  "
+            f"Right-only: {qc['right_only']:,}  ·  Conflicting (discarded): {qc['conflicting']:,}  ·  "
+            f"No barcode found: {qc['no_match']:,}"
+        )
+
+        st.divider()
+        st.header("Per-variant report")
+
+        status_filter = st.multiselect(
+            "Filter by status",
+            options=sorted(report_df["status"].unique()),
+            default=list(report_df["status"].unique()),
+        )
+        filtered = report_df[report_df["status"].isin(status_filter)]
+        st.dataframe(filtered, use_container_width=True, hide_index=True)
+
+        unmatched = report_df[report_df["status"] == "No confident match"]
+        if len(unmatched):
+            st.warning(
+                f"{len(unmatched)} variant(s) had no confidently matching reads: "
+                f"{', '.join(unmatched['variant'].astype(str).tolist())}"
+            )
+        else:
+            st.success("Every variant had at least one confidently matching read.")
+
+        st.bar_chart(report_df.set_index("variant")["mapped_reads"])
+
+        st.download_button(
+            "Download per-variant report (CSV)",
+            report_df.to_csv(index=False).encode("utf-8"),
+            file_name=f"{pool}_{CONSTRUCTS[construct_label]}_junction_report.csv",
+            mime="text/csv",
+        )
+    finally:
+        cleanup(fastq_path)
+
+    st.stop()
+
+# ── Upload-your-own-files mode (general purpose, unchanged) ──────────────────
+with st.sidebar:
     fasta_files = st.file_uploader(
         "Reference FASTA / GenBank / SnapGene — the sequences you expect",
         type=["fasta", "fa", "fna", "gb", "gbk", "genbank", "dna"],
@@ -79,7 +213,9 @@ if not go:
         "matching in `*pipeline_kmer.py` that works for any sequences, not just "
         "one specific assay.\n"
         "- Running both gives you a cross-check: a reference confirmed by both "
-        "methods is a high-confidence match."
+        "methods is a high-confidence match.\n\n"
+        "Need per-position resolution for the TadA library specifically? Switch "
+        "to **Bundled junction database** in the sidebar instead."
     )
     st.stop()
 
